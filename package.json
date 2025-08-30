@@ -1,5 +1,5 @@
 {
-  "name": "pdf-tools-backend",
+  "name": "my-pdf-backend",
   "version": "1.0.0",
   "description": "Backend for PDF and Image tools",
   "main": "server.js",
@@ -16,3 +16,4 @@
     "sharp": "^0.32.6"
   }
 }
+
