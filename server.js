@@ -4,11 +4,8 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { exec } = require('child_process'); // Hum ab seedhe command chalayenge
+const { exec } = require('child_process');
 const sharp = require('sharp');
-
-// 'libreoffice-convert' ki ab zaroorat nahi hai
-// const libre = require('libreoffice-convert');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,7 +14,7 @@ app.use(cors());
 const upload = multer({ dest: os.tmpdir() });
 
 // --- NAYA, DIRECT TAREEKA FILE CONVERSION KE LIYE ---
-const handleConversion = async (req, res, outputExtension) => {
+const handleConversion = async (req, res, next, outputExtension) => { // Added 'next'
     if (!req.file) {
         return res.status(400).send('No file uploaded.');
     }
@@ -26,86 +23,98 @@ const handleConversion = async (req, res, outputExtension) => {
     const outputDir = os.tmpdir();
     const originalName = path.parse(req.file.originalname).name;
 
-    // LibreOffice ko direct command dena
-    const command = `libreoffice --headless --convert-to ${outputExtension} --outdir "${outputDir}" "${inputPath}"`;
+    const command = `libreoffice --headless --convert-to ${outputExtension} --outdir \"${outputDir}\" \"${inputPath}\"`;
 
     exec(command, (error, stdout, stderr) => {
         if (error) {
             console.error(`Exec Error: ${error.message}`);
             console.error(`Stderr: ${stderr}`);
-            // Error aane par input file delete karna
-            fs.unlinkSync(inputPath);
-            return res.status(500).send('File conversion failed on the server.');
+            fs.unlink(inputPath, () => {}); // Use async unlink
+            return next(new Error('File conversion failed on the server.')); // Pass error to middleware
         }
 
-        const outputPath = path.join(outputDir, `${path.basename(inputPath, path.extname(inputPath))}.${outputExtension}`);
-        
-        // Check karein ki output file bani hai ya nahi
+        const convertedFileName = `${path.basename(inputPath)}.${outputExtension}`;
+        const outputPath = path.join(outputDir, convertedFileName);
+
         if (fs.existsSync(outputPath)) {
             res.download(outputPath, `${originalName}.${outputExtension}`, (downloadErr) => {
                 if (downloadErr) {
                     console.error("Download Error:", downloadErr);
                 }
-                // Dono temporary files ko delete karna
-                fs.unlinkSync(inputPath);
-                fs.unlinkSync(outputPath);
+                // Clean up both temporary files
+                fs.unlink(inputPath, () => {});
+                fs.unlink(outputPath, () => {});
             });
         } else {
             console.error('Conversion succeeded but output file was not found.');
             console.error(`Expected path: ${outputPath}`);
-            fs.unlinkSync(inputPath);
-            res.status(500).send('Conversion failed: Output file not created.');
+            fs.unlink(inputPath, () => {});
+            return next(new Error('Conversion failed: Output file not created.')); // Pass error to middleware
         }
     });
 };
 
-// --- API ROUTES (ab naye function ka istemal karenge) ---
-app.post('/convert/pdf-to-word', upload.single('file'), (req, res) => handleConversion(req, res, 'docx'));
-app.post('/convert/word-to-pdf', upload.single('file'), (req, res) => handleConversion(req, res, 'pdf'));
-app.post('/convert/pdf-to-ppt', upload.single('file'), (req, res) => handleConversion(req, res, 'pptx'));
-app.post('/convert/ppt-to-pdf', upload.single('file'), (req, res) => handleConversion(req, res, 'pdf'));
-app.post('/convert/pdf-to-excel', upload.single('file'), (req, res) => handleConversion(req, res, 'xlsx'));
-app.post('/convert/excel-to-pdf', upload.single('file'), (req, res) => handleConversion(req, res, 'pdf'));
+// --- API ROUTES ---
+app.post('/pdf-to-word', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'docx'));
+// Note: The original frontend code calls /pdf-to-word, not /convert/pdf-to-word.
+// I've updated the routes below to match the likely intent for other tools.
+app.post('/word-to-pdf', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pdf'));
+app.post('/pdf-to-powerpoint', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pptx'));
+app.post('/powerpoint-to-pdf', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pdf'));
+app.post('/pdf-to-excel', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'xlsx'));
+app.post('/excel-to-pdf', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pdf'));
 
-app.post('/compress-pdf', upload.single('file'), (req, res) => {
+
+app.post('/compress-pdf', upload.single('file'), (req, res, next) => {
     if (!req.file) return res.status(400).send('No file uploaded.');
+    
     const qualityLevel = req.body.level || 'medium';
     const options = { low: 'screen', medium: 'ebook', high: 'printer' };
     const pdfSetting = options[qualityLevel] || options.medium;
     const inputPath = req.file.path;
     const outputPath = path.join(os.tmpdir(), `compressed-${req.file.originalname}`);
-    const command = `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/${pdfSetting} -dNOPAUSE -dQUIET -dBATCH -sOutputFile="${outputPath}" "${inputPath}"`;
+    const command = `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/${pdfSetting} -dNOPAUSE -dQUIET -dBATCH -sOutputFile=\"${outputPath}\" \"${inputPath}\"`;
 
     exec(command, (error) => {
         if (error) {
             console.error(`Ghostscript Error: ${error.message}`);
-            fs.unlinkSync(inputPath);
-            return res.status(500).send('Error during PDF compression.');
+            fs.unlink(inputPath, () => {});
+            return next(new Error('Error during PDF compression.'));
         }
         res.download(outputPath, `compressed-${req.file.originalname}`, () => {
-            fs.unlinkSync(inputPath);
-            fs.unlinkSync(outputPath);
+            fs.unlink(inputPath, () => {});
+            fs.unlink(outputPath, () => {});
         });
     });
 });
 
-app.post('/compress-image', upload.single('file'), async (req, res) => {
+app.post('/compress-image', upload.single('file'), async (req, res, next) => {
     if (!req.file) return res.status(400).send('No file uploaded.');
+    
     const inputPath = req.file.path;
     const outputPath = path.join(os.tmpdir(), `compressed-${req.file.originalname}`);
+    
     try {
         await sharp(inputPath).jpeg({ quality: 80 }).png({ quality: 80 }).toFile(outputPath);
         res.download(outputPath, `compressed-${req.file.originalname}`, () => {
-            fs.unlinkSync(inputPath);
-            fs.unlinkSync(outputPath);
+            fs.unlink(inputPath, () => {});
+            fs.unlink(outputPath, () => {});
         });
     } catch (error) {
-        console.error("Image compression error:", error);
-        res.status(500).send('Error during image compression.');
+        fs.unlink(inputPath, () => {});
+        return next(error); // Pass error to middleware
     }
 });
 
 app.get('/', (req, res) => res.send('PDF Tools Backend is running!'));
+
+// --- GLOBAL ERROR HANDLER ---
+// This middleware will catch any errors passed with next()
+app.use((err, req, res, next) => {
+    console.error('An unhandled error occurred:', err.stack);
+    res.status(500).send('An unexpected error occurred on the server. Please try again later.');
+});
+
 app.listen(PORT, () => {
     console.log(`Server is running successfully on port ${PORT}`);
 });
