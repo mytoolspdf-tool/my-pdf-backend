@@ -11,10 +11,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-const upload = multer({ dest: os.tmpdir() });
 
-// --- NAYA, DIRECT TAREEKA FILE CONVERSION KE LIYE ---
-const handleConversion = async (req, res, next, outputExtension) => { // Added 'next'
+// Configure multer to save files with their original extension
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, os.tmpdir());
+    },
+    filename: (req, file, cb) => {
+        // Use a unique name but keep the original extension
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({ storage: storage });
+
+// --- File Conversion Handler ---
+const handleConversion = async (req, res, next, outputExtension) => {
     if (!req.file) {
         return res.status(400).send('No file uploaded.');
     }
@@ -29,12 +42,13 @@ const handleConversion = async (req, res, next, outputExtension) => { // Added '
         if (error) {
             console.error(`Exec Error: ${error.message}`);
             console.error(`Stderr: ${stderr}`);
-            fs.unlink(inputPath, () => {}); // Use async unlink
-            return next(new Error('File conversion failed on the server.')); // Pass error to middleware
+            fs.unlink(inputPath, () => {});
+            return next(new Error('File conversion failed on the server.'));
         }
 
-        const convertedFileName = `${path.basename(inputPath)}.${outputExtension}`;
-        const outputPath = path.join(outputDir, convertedFileName);
+        // LibreOffice creates the output file with the same base name as the input
+        const outputFileName = `${path.parse(req.file.filename).name}.${outputExtension}`;
+        const outputPath = path.join(outputDir, outputFileName);
 
         if (fs.existsSync(outputPath)) {
             res.download(outputPath, `${originalName}.${outputExtension}`, (downloadErr) => {
@@ -48,16 +62,15 @@ const handleConversion = async (req, res, next, outputExtension) => { // Added '
         } else {
             console.error('Conversion succeeded but output file was not found.');
             console.error(`Expected path: ${outputPath}`);
+            console.error(`Input path was: ${inputPath}`);
             fs.unlink(inputPath, () => {});
-            return next(new Error('Conversion failed: Output file not created.')); // Pass error to middleware
+            return next(new Error('Conversion failed: Output file not created.'));
         }
     });
 };
 
 // --- API ROUTES ---
 app.post('/pdf-to-word', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'docx'));
-// Note: The original frontend code calls /pdf-to-word, not /convert/pdf-to-word.
-// I've updated the routes below to match the likely intent for other tools.
 app.post('/word-to-pdf', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pdf'));
 app.post('/pdf-to-powerpoint', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pptx'));
 app.post('/powerpoint-to-pdf', upload.single('file'), (req, res, next) => handleConversion(req, res, next, 'pdf'));
@@ -109,7 +122,6 @@ app.post('/compress-image', upload.single('file'), async (req, res, next) => {
 app.get('/', (req, res) => res.send('PDF Tools Backend is running!'));
 
 // --- GLOBAL ERROR HANDLER ---
-// This middleware will catch any errors passed with next()
 app.use((err, req, res, next) => {
     console.error('An unhandled error occurred:', err.stack);
     res.status(500).send('An unexpected error occurred on the server. Please try again later.');
